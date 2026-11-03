@@ -16,6 +16,8 @@ bash run-tests.sh
 Both app and embedded extension must have only an `arm64` slice; the script checks.
 The Xcode project is generated under `.build/xcode`; no XcodeGen installation is
 needed. All outputs are under `.build/`. An unsigned app cannot activate the helper.
+The generated extension product reference uses the same `BUNDLE_ID` as the signed
+product, avoiding a stale unsigned-test identifier during embedding.
 
 ## Signed build
 
@@ -78,7 +80,11 @@ appropriate distribution signing/notarization, not this local development build.
    macOS normally rejects activation from unsupported containing-app locations.
    This is a normal application installation; no manual system-file editing.
 2. Open the app. Launch does NOT submit an extension request or enable filtering.
-3. Select the experiment source directory containing `fixtures/baseline.py`.
+3. Select the experiment source directory containing `fixtures/baseline.py`, or
+   paste the path into its editable field (standard Edit-menu shortcuts; `~/` is
+   expanded). Log text/background use dynamic system colors for dark/light mode.
+   The fixture locates existing Bun in common user/Homebrew locations if Finder's
+   minimal PATH omits it; it does not source shell RC files or install dependencies.
 4. Click **Activate extension**. Follow macOS's authorization/approval UI. Do not
    disable Tailscale, security agents or another extension to make the test pass.
 5. If activation fails, retain the exact error and stop. Do not assume a signing

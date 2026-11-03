@@ -70,18 +70,23 @@ The fixtures establish a baseline; they have not been run against an active filt
   missing endpoints, deterministic JSON and known reparenting limitation.
 - Live root/child/grandchild probe passed; calling terminal/agent was unrelated.
 - Proxy-free loopback Bun HTTP, Git HTTP, raw TCP and raw UDP baseline passed.
-- Containing app + embedded system extension compile successfully without signing.
+- Containing app + embedded system extension compile and sign successfully using
+  Apple Development provisioning. App and extension are ARM-only; signature
+  verification passes. The operator copied the app into Applications.
 - Valid Apple Development signing identity is now available after the operator
   installed Apple's WWDR G3 intermediate certificate.
 - The selected paid team is now accepted, the operator's Mac is registered, and
   development profiles for app/extension were generated through explicit flags.
 - Development signing uses `content-filter-provider`. Apple's suffixed value is
   for Developer ID signing, as documented in its entitlement reference.
-- Actual signing currently stopped at `errSecInternalComponent`; securityd logs
-  show the `/usr/bin/codesign` signing-key access prompt was canceled/not approved.
+- An initial `errSecInternalComponent` signing failure was traced to a canceled
+  codesign Keychain prompt and resolved by operator approval. A personalized
+  bundle-ID embed-path bug was corrected in the generated Xcode project.
 - Read-only filter-preferences probe timed out after 10 seconds. No settings saved.
-- Our app/extension have not been installed or activated. No interception claim
-  for OUR provider yet.
+- The operator's GUI-launched local fixture passes after fixing Finder's minimal
+  PATH executable discovery. Four executable-discovery regression tests pass.
+- Our extension's activation/interception is still unverified. No enforcement
+  claim for OUR provider yet.
 - A separate operator-installed **LuLu 4.5.7** test confirmed ordinary descendants
   are blocked by a lifetime parent-tree rule while an unrelated process is allowed.
   A reparented descendant received an HTTP response despite the selected root
@@ -92,9 +97,9 @@ provider sandbox or that socket attribution works for these applications there.
 
 ## Gaps before this can be a safety boundary
 
-1. **Signing and activation:** the app/extension compile and paid development
-   provisioning is available. Actual signing-key access and subsequent OS activation
-   still need operator approval. Do not bypass signing/SIP or modify system files. Another
+1. **Activation:** development signing/provisioning and signature verification pass.
+   OS activation and actual provider execution still need live validation and
+   operator approval. Do not bypass signing/SIP or modify system files. Another
    installed network component (Tailscale here) must be tested for coexistence,
    not disabled to make this pass.
 2. **Trusted process lifecycle attribution:** the current ancestry walk is only

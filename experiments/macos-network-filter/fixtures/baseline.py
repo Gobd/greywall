@@ -25,11 +25,28 @@ class UDPHandler(socketserver.BaseRequestHandler):
         sock.sendto(data, self.client_address)
 
 
+def find_installed_executable(name, candidates):
+    """Finder apps have a minimal PATH; inspect known installations, not shell RCs."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for candidate in candidates:
+        path = Path(candidate).expanduser()
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    return None
+
+
 def main():
-    bun = shutil.which("bun")
-    git = shutil.which("git")
+    bun = find_installed_executable("bun", ["~/.bun/bin/bun", "/opt/homebrew/bin/bun",
+                                           "~/.local/bin/bun", "~/bin/bun"])
+    git = find_installed_executable("git", ["/usr/bin/git", "/opt/homebrew/bin/git"])
     if not bun or not git:
-        raise RuntimeError("Existing bun and git installations required; nothing will be installed")
+        missing = ", ".join(name for name, path in [("bun", bun), ("git", git)] if not path)
+        raise RuntimeError("Existing executable(s) not found: " + missing +
+                           "; nothing will be installed. Check PATH or the supported installation locations.")
+    print("Using existing Bun:", bun, flush=True)
+    print("Using existing Git:", git, flush=True)
     temp_root = ROOT / ".build" / "tmp"
     temp_root.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
@@ -57,7 +74,7 @@ def main():
             for server in servers:
                 threading.Thread(target=server.serve_forever, daemon=True).start()
             http_url = "http://127.0.0.1:" + str(http_server.server_port)
-            print("BASELINE ONLY: no filter installed; all traffic remains local.", flush=True)
+            print("LOCAL TRAFFIC FIXTURE: response checks only; correlate with provider logs for filtering.", flush=True)
             print("Harness-like root PID:", os.getpid(), flush=True)
             subprocess.run([bun, "-e", 'const r = await fetch(process.argv[1]); if (!r.ok) process.exit(1); console.log("Bun HTTP:", r.status);', http_url + "/repo.git/HEAD"],
                            env=env, check=True, timeout=10)
@@ -69,7 +86,7 @@ def main():
                             "fixture", sys.executable, str(Path(__file__).with_name("raw_sockets.py")),
                             str(tcp.server_address[1]), str(udp.server_address[1])],
                            env=env, check=True, timeout=10)
-            print("PASS: Bun, Git, raw TCP and UDP baseline. Interception NOT tested.", flush=True)
+            print("PASS: Bun, Git, raw TCP and UDP responses. Provider interception must be verified separately.", flush=True)
     finally:
         for server in servers:
             server.shutdown()

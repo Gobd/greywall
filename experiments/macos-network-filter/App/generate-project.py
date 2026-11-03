@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Generate a dependency-free Xcode project under .build, never install anything."""
 import hashlib
+import os
 from pathlib import Path
 import plistlib
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = ROOT / ".build" / "xcode" / "GreywallNetworkExperiment.xcodeproj"
+BUNDLE_ID = os.environ.get("BUNDLE_ID", "dev.greywall.NetworkExperiment")
 objects = {}
 
 
@@ -36,7 +38,7 @@ products = []
 common = dict(SDKROOT="macosx", MACOSX_DEPLOYMENT_TARGET="15.0", SWIFT_VERSION="5.0",
               CODE_SIGN_STYLE="Automatic", CODE_SIGN_IDENTITY="Apple Development",
               DEVELOPMENT_TEAM="", ENABLE_HARDENED_RUNTIME="YES", GENERATE_INFOPLIST_FILE="NO",
-              GREYWALL_BUNDLE_ID="dev.greywall.NetworkExperiment", ENABLE_USER_SCRIPT_SANDBOXING="YES",
+              GREYWALL_BUNDLE_ID=BUNDLE_ID, ENABLE_USER_SCRIPT_SANDBOXING="YES",
               ALWAYS_SEARCH_USER_PATHS="NO", GREYWALL_NE_ENTITLEMENT="content-filter-provider")
 
 
@@ -67,7 +69,7 @@ def target(name, directory, product_name, product_type, wrapper, package_product
     return key, product
 
 
-extension, extension_product = target("FilterExtension", "Extension", "$(GREYWALL_BUNDLE_ID).filter.systemextension",
+extension, extension_product = target("FilterExtension", "Extension", BUNDLE_ID + ".filter.systemextension",
     "com.apple.product-type.system-extension", "wrapper.system-extension", "FilterPrototype",
     "Filter.entitlements", "$(GREYWALL_BUNDLE_ID).filter")
 host, host_product = target("GreywallNetworkExperiment", "Host", "Greywall Network Experiment.app",

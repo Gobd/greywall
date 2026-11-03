@@ -22,6 +22,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
         let menuItem = NSMenuItem()
         menuItem.submenu = appMenu
         menu.addItem(menuItem)
+        let editMenu = NSMenu(title: "Edit")
+        for (title, action, key) in [("Cut", "cut:", "x"), ("Copy", "copy:", "c"),
+                                     ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
+            editMenu.addItem(withTitle: title, action: Selector(action), keyEquivalent: key)
+        }
+        let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        editItem.submenu = editMenu
+        menu.addItem(editItem)
         NSApp.mainMenu = menu
 
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 580),
@@ -45,9 +53,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
                                          button("Choose…", #selector(chooseFolder))])
         folder.orientation = .horizontal
         experimentPath.widthAnchor.constraint(greaterThanOrEqualToConstant: 350).isActive = true
+        experimentPath.isEditable = true
+        experimentPath.isSelectable = true
+        experimentPath.placeholderString = "Paste a folder path or choose one…"
         output.isEditable = false
+        output.isSelectable = true
         output.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        output.textColor = .textColor
+        output.backgroundColor = .textBackgroundColor
         let scroll = NSScrollView()
+        scroll.backgroundColor = .textBackgroundColor
         scroll.hasVerticalScroller = true
         scroll.documentView = output
         let stack = NSStackView(views: [title, buttons, folder, controls, scroll])
@@ -75,7 +90,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
     }
     private func append(_ text: String) {
         DispatchQueue.main.async {
-            self.output.textStorage?.append(NSAttributedString(string: text + "\n"))
+            self.output.textStorage?.append(NSAttributedString(string: text + "\n", attributes: [
+                .foregroundColor: NSColor.textColor,
+                .font: self.output.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+            ]))
             self.output.scrollToEndOfDocument(nil)
         }
     }
@@ -155,7 +173,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
     }
     @objc private func runFixture() {
         guard fixture == nil else { append("Fixture already running."); return }
-        let path = URL(fileURLWithPath: experimentPath.stringValue).appendingPathComponent("fixtures/baseline.py")
+        let entered = experimentPath.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let folder = (entered as NSString).expandingTildeInPath
+        let path = URL(fileURLWithPath: folder).standardizedFileURL.appendingPathComponent("fixtures/baseline.py")
         guard FileManager.default.fileExists(atPath: path.path) else { append("Choose the experiment folder containing fixtures/baseline.py."); return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
@@ -172,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
         process.terminationHandler = { finished in
             DispatchQueue.main.async {
                 self.fixture = nil
-                self.append("Fixture exit \(finished.terminationStatus). A failed fixture alone does NOT prove interception; correlate scope=tracked decision=drop logs.")
+                self.append("Fixture exit \(finished.terminationStatus). Correlate success/failure with the provider's tracked allow/drop logs before interpreting filtering behavior.")
             }
         }
         do { try process.run(); fixture = process }
