@@ -4,6 +4,19 @@ Apple Silicon macOS 15+ only. No Intel slice, VM, TUN routes or proxy variables.
 This is a diagnostic experiment, **not a production sandbox**. It is independent
 of the installed Greywall binary. Build commands never install or activate it.
 
+## Build-2 changes and current limits
+
+Build 2 adds explicit Copy Log, paste/tilde support, dynamic log colors, authenticated
+readiness/counters, project policy save/load and a CLI supervisor. These compile and
+have offline tests, but the new XPC/CLI path is not yet live verified. The earlier
+host-wide DNS/proxy incident remains unresolved; keep the old extension disabled
+until an operator-approved bounded regression test.
+
+`build-combined.sh` builds the app plus an isolated Greywall CLI; see `../CLI.md`.
+Seatbelt does NOT support arbitrary-IP remote rules. Nonempty CLI enforcement
+therefore requires explicit best-effort acknowledgment; it is not detached-safe
+or Linux-equivalent containment. The GUI fixture is a diagnostic, not a sandbox.
+
 ## Compile without signing
 
 From `experiments/macos-network-filter`:
@@ -122,9 +135,12 @@ than breaking unrelated host apps. The prototype is therefore NOT fail-closed.
 Unrelated processes' destinations are not logged or learned. OS callbacks may
 still expose their flow metadata to the extension before that early allow verdict.
 
-Learning export and an approval UI are not connected to this app yet. Allow-one/
-block-another, raw TCP/UDP and IPv6 enforcement matrices, project replay and
-lifecycle/reparenting tests remain follow-up work after the first live capture.
+Learning snapshots can now be saved to the selected folder's `.greywall/network.json`
+and loaded for helper enforcement; CLI learning produces a validated candidate for
+Greywall to commit after success. Live replay remains unverified. The approval UI,
+allow-one/block-another, protocol/IPv6 matrices, lifecycle and delegated-flow tests
+remain follow-up work. Fixtures choose ephemeral ports, so an unmodified second
+fixture run is NOT a meaningful exact-policy replay test.
 
 ## Disable / remove
 

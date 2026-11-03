@@ -12,25 +12,30 @@ import (
 
 // Manager handles sandbox initialization and command wrapping.
 type Manager struct {
-	config        *config.Config
-	proxyBridge   *ProxyBridge
-	dnsBridge     *DnsBridge
-	reverseBridge *ReverseBridge
-	forwardBridge *ForwardBridge
-	dbusBridge    *DbusBridge
-	tun2socksPath string // path to extracted tun2socks binary on host
-	exposedPorts  []int
-	debug         bool
-	monitor       bool
-	initialized   bool
-	learning      bool   // learning mode: permissive sandbox with strace/eslogger
-	watch         bool   // watch mode: permissive sandbox for pure observability (no strace, no profile gen)
-	straceLogPath string // host-side temp file for strace output (Linux)
-	commandName   string // name of the command being learned
+	config             *config.Config
+	proxyBridge        *ProxyBridge
+	dnsBridge          *DnsBridge
+	reverseBridge      *ReverseBridge
+	forwardBridge      *ForwardBridge
+	dbusBridge         *DbusBridge
+	tun2socksPath      string // path to extracted tun2socks binary on host
+	exposedPorts       []int
+	debug              bool
+	monitor            bool
+	initialized        bool
+	learning           bool   // learning mode: permissive sandbox with strace/eslogger
+	watch              bool   // watch mode: permissive sandbox for pure observability (no strace, no profile gen)
+	straceLogPath      string // host-side temp file for strace output (Linux)
+	commandName        string // name of the command being learned
+	learningOutputPath string // optional project-local output (no global profile writes)
+	nativePolicy       *NativeNetworkPolicy
+	nativeLearning     bool
 	// macOS learning mode fields
 	learningRootPID   int               // root PID of the sandboxed command (for eslogger PID tree tracking)
 	esloggerLogPath   string            // temp file for eslogger output (macOS)
 	esloggerCmd       *exec.Cmd         // eslogger subprocess (macOS)
+	esloggerDone      chan struct{}     // closed by the sole cmd.Wait goroutine
+	esloggerExitErr   error             // read only after esloggerDone is closed
 	rewrittenEnvFiles map[string]string // original path -> temp path with credential placeholders
 	macOSTmpDir       string            // per-session TMPDIR created on macOS (cleaned up on exit)
 }
@@ -52,6 +57,44 @@ func (m *Manager) SetExposedPorts(ports []int) {
 // SetLearning enables or disables learning mode.
 func (m *Manager) SetLearning(enabled bool) {
 	m.learning = enabled
+}
+
+// SetLearningOutputPath selects an explicit project-local filesystem profile.
+func (m *Manager) SetLearningOutputPath(path string) { m.learningOutputPath = path }
+
+// SetNativeNetwork selects an experimental native backend. Empty enforcement
+// retains kernel deny-all; nonempty IP policies require explicit best-effort
+// acknowledgment because Seatbelt cannot express those addresses. The caller
+// must verify provider readiness before executing. This does not activate it.
+func (m *Manager) SetNativeNetwork(policy *NativeNetworkPolicy, learn bool) error {
+	if err := policy.Validate(); err != nil {
+		return err
+	}
+	if m.config == nil {
+		return fmt.Errorf("native network manager requires config")
+	}
+	if !learn && len(policy.Destinations) > 0 && !policy.BestEffort {
+		return fmt.Errorf("seatbelt cannot enforce arbitrary IP allowlists; scoped helper enforcement has ancestry gaps; explicitly acknowledge --native-best-effort to experiment, or use the Linux backend")
+	}
+	if m.config.Network.AllowAllUnixSockets || len(m.config.Network.AllowUnixSockets) != 0 {
+		return fmt.Errorf("native backend does not support arbitrary Unix-socket grants")
+	}
+	m.nativePolicy = policy
+	m.nativeLearning = learn
+	m.config.Network.ProxyURL = ""
+	m.config.Network.HTTPProxyURL = ""
+	m.config.Network.DnsAddr = ""
+	// macOS's system resolver IPC is trusted infrastructure, not a DNS-content
+	// allowlist. Do not apply process attribution to its shared network sockets.
+	m.config.Network.AllowUnixSockets = []string{"/private/var/run/mDNSResponder", "/var/run/mDNSResponder"}
+	return nil
+}
+
+func (m *Manager) saveLearnedTrace(result *TraceResult, cmdName string) (string, error) {
+	if m.learningOutputPath != "" {
+		return GenerateLearnedTemplateAt(result, cmdName, m.debug, m.learningOutputPath)
+	}
+	return GenerateLearnedTemplate(result, cmdName, m.debug)
 }
 
 // SetCommandName sets the command name for learning mode profile generation.
@@ -123,26 +166,21 @@ func (m *Manager) Initialize() error {
 			return fmt.Errorf("failed to start eslogger: %w", err)
 		}
 		m.esloggerCmd = cmd
+		m.esloggerDone = make(chan struct{})
+		go func() {
+			m.esloggerExitErr = cmd.Wait()
+			close(m.esloggerDone)
+		}()
 		_ = logFile.Close() // eslogger owns the fd now via its stdout
 
-		// Wait for eslogger to connect to Endpoint Security and start emitting events.
-		// Once connected, it immediately logs events from all processes on the system,
-		// so any data in the log file means it's ready.
-		m.logDebug("Waiting for eslogger to become ready...")
-		ready := false
-		for range 50 { // up to 5 seconds
-			info, err := os.Stat(m.esloggerLogPath)
-			if err == nil && info.Size() > 0 {
-				ready = true
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
+		m.logDebug("Waiting for eslogger to emit a valid event...")
+		if err := waitForTraceStartup(m.esloggerLogPath, m.esloggerDone, func() error { return m.esloggerExitErr }, 5*time.Second); err != nil {
+			_ = m.stopEslogger()
+			_ = os.Remove(m.esloggerLogPath)
+			m.esloggerLogPath = ""
+			return err
 		}
-		if !ready {
-			m.logDebug("eslogger did not produce output within 5s, proceeding anyway")
-		} else {
-			m.logDebug("eslogger is ready")
-		}
+		m.logDebug("eslogger is ready")
 
 		m.initialized = true
 		return nil
@@ -152,16 +190,16 @@ func (m *Manager) Initialize() error {
 	if platform.Detect() == platform.Linux {
 		if m.config.Network.ProxyURL != "" {
 			// Extract embedded tun2socks binary
-			tun2socksPath, err := extractTun2Socks()
-			if err != nil {
+			tun2socksPath, err := extractTun2Socks() //nolint:staticcheck // guarded Linux branch; Darwin stub always returns an error
+			if err != nil {                          //nolint:staticcheck // unreachable stub path on Darwin
 				m.logDebug("Failed to extract tun2socks: %v (will fall back to env-var proxying)", err)
 			} else {
 				m.tun2socksPath = tun2socksPath
 			}
 
 			// Create proxy bridge (socat: Unix socket -> external SOCKS5 proxy)
-			bridge, err := NewProxyBridge(m.config.Network.ProxyURL, m.debug)
-			if err != nil {
+			bridge, err := NewProxyBridge(m.config.Network.ProxyURL, m.debug) //nolint:staticcheck // guarded Linux branch
+			if err != nil {                                                   //nolint:staticcheck // unreachable stub path on Darwin
 				if m.tun2socksPath != "" {
 					_ = os.Remove(m.tun2socksPath)
 				}
@@ -171,8 +209,8 @@ func (m *Manager) Initialize() error {
 
 			// Create DNS bridge if a DNS server is configured
 			if m.config.Network.DnsAddr != "" {
-				dnsBridge, err := NewDnsBridge(m.config.Network.DnsAddr, m.debug)
-				if err != nil {
+				dnsBridge, err := NewDnsBridge(m.config.Network.DnsAddr, m.debug) //nolint:staticcheck // guarded Linux branch
+				if err != nil {                                                   //nolint:staticcheck // unreachable stub path on Darwin
 					m.proxyBridge.Cleanup()
 					if m.tun2socksPath != "" {
 						_ = os.Remove(m.tun2socksPath)
@@ -187,8 +225,8 @@ func (m *Manager) Initialize() error {
 		// Only needed when network namespace is available - otherwise they share the network
 		features := DetectLinuxFeatures()
 		if len(m.exposedPorts) > 0 && features.CanUnshareNet {
-			reverseBridge, err := NewReverseBridge(m.exposedPorts, m.debug)
-			if err != nil {
+			reverseBridge, err := NewReverseBridge(m.exposedPorts, m.debug) //nolint:staticcheck // guarded Linux branch
+			if err != nil {                                                 //nolint:staticcheck // unreachable stub path on Darwin
 				if m.proxyBridge != nil {
 					m.proxyBridge.Cleanup()
 				}
@@ -204,8 +242,8 @@ func (m *Manager) Initialize() error {
 
 		// Set up forward bridge for localhost outbound (sandbox -> host localhost ports)
 		if len(m.config.Network.ForwardPorts) > 0 && features.CanUnshareNet {
-			forwardBridge, err := NewForwardBridge(m.config.Network.ForwardPorts, m.debug)
-			if err != nil {
+			forwardBridge, err := NewForwardBridge(m.config.Network.ForwardPorts, m.debug) //nolint:staticcheck // guarded Linux branch
+			if err != nil {                                                                //nolint:staticcheck // unreachable stub path on Darwin
 				if m.proxyBridge != nil {
 					m.proxyBridge.Cleanup()
 				}
@@ -278,6 +316,9 @@ func (m *Manager) WrapCommand(command string) (string, error) {
 		// wrapper still exports proxy env vars (HTTP_PROXY, ALL_PROXY, ...).
 		// The permissive overrides applied in main.go ensure the generated
 		// Seatbelt profile is wide-open for filesystem reads.
+		if m.nativePolicy != nil {
+			return WrapCommandMacOSNative(m.config, command, m.exposedPorts, m.macOSTmpDir, m.debug, m.nativePolicy, m.nativeLearning)
+		}
 		return WrapCommandMacOS(m.config, command, m.exposedPorts, m.rewrittenEnvFiles, m.macOSTmpDir, m.debug)
 	case platform.Linux:
 		if m.learning {
@@ -335,11 +376,8 @@ func (m *Manager) SetLearningRootPID(pid int) {
 // Cleanup stops the proxies and cleans up resources.
 func (m *Manager) Cleanup() {
 	// Stop macOS eslogger if running
-	if m.esloggerCmd != nil && m.esloggerCmd.Process != nil {
-		m.logDebug("Stopping eslogger (PID %d)", m.esloggerCmd.Process.Pid)
-		_ = m.esloggerCmd.Process.Signal(os.Interrupt)
-		_ = m.esloggerCmd.Wait()
-		m.esloggerCmd = nil
+	if err := m.stopEslogger(); err != nil {
+		m.logDebug("Tracer shutdown: %v", err)
 	}
 
 	if m.dbusBridge != nil {
@@ -373,6 +411,39 @@ func (m *Manager) Cleanup() {
 		m.macOSTmpDir = ""
 	}
 	m.logDebug("Sandbox manager cleaned up")
+}
+
+// stopEslogger never calls Wait twice and rejects a tracer that died before we
+// requested shutdown. Cleanup is bounded even if sudo/eslogger ignores SIGINT.
+func (m *Manager) stopEslogger() error {
+	if m.esloggerCmd == nil || m.esloggerCmd.Process == nil {
+		return nil
+	}
+	defer func() { m.esloggerCmd = nil }()
+	select {
+	case <-m.esloggerDone:
+		return fmt.Errorf("eslogger exited before tracing completed: %v; no learned profile will be saved", m.esloggerExitErr)
+	default:
+	}
+	_ = m.esloggerCmd.Process.Signal(os.Interrupt)
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-m.esloggerDone:
+		return nil
+	case <-timer.C:
+		if err := m.esloggerCmd.Process.Kill(); err != nil {
+			return fmt.Errorf("cannot stop eslogger: %w; no profile saved; check tracer process manually", err)
+		}
+		killTimer := time.NewTimer(2 * time.Second)
+		defer killTimer.Stop()
+		select {
+		case <-m.esloggerDone:
+			return fmt.Errorf("eslogger required forced shutdown; no profile saved")
+		case <-killTimer.C:
+			return fmt.Errorf("eslogger shutdown timed out after kill; no profile saved; check tracer process manually")
+		}
+	}
 }
 
 func (m *Manager) logDebug(format string, args ...interface{}) {

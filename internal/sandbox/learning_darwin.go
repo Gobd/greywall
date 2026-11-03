@@ -127,6 +127,9 @@ func eventName(ev *esloggerEvent) string {
 // Uses a two-pass approach: pass 1 scans fork events to build the PID tree,
 // pass 2 filters filesystem events by the PID set.
 func ParseEsloggerLog(logPath string, rootPID int, debug bool) (*TraceResult, error) {
+	if rootPID <= 0 {
+		return nil, fmt.Errorf("invalid learning root PID %d; refusing to save an unscoped profile", rootPID)
+	}
 	home, _ := os.UserHomeDir()
 	seenWrite := make(map[string]bool)
 	seenRead := make(map[string]bool)
@@ -170,6 +173,7 @@ func ParseEsloggerLog(logPath string, rootPID int, debug bool) (*TraceResult, er
 	matchedLines := 0
 	writeCount := 0
 	readCount := 0
+	matchedFilesystemEvents := 0
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -199,6 +203,7 @@ func ParseEsloggerLog(logPath string, rootPID int, debug bool) (*TraceResult, er
 		if class == opSkip || len(paths) == 0 {
 			continue
 		}
+		matchedFilesystemEvents++
 
 		for _, path := range paths {
 			if shouldFilterPathMacOS(path, home) {
@@ -224,6 +229,10 @@ func ParseEsloggerLog(logPath string, rootPID int, debug bool) (*TraceResult, er
 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("error reading eslogger log: %w", err)
+	}
+
+	if matchedFilesystemEvents == 0 {
+		return nil, fmt.Errorf("no filesystem events matched learning root PID %d or its traced children; refusing to save an empty profile", rootPID)
 	}
 
 	if debug {

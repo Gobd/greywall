@@ -73,6 +73,12 @@ func SanitizeTemplateName(name string) string {
 // GenerateLearnedTemplate collapses paths from a trace result and saves a profile.
 // Returns the path where the profile was saved.
 func GenerateLearnedTemplate(result *TraceResult, cmdName string, debug bool) (string, error) {
+	return GenerateLearnedTemplateAt(result, cmdName, debug, LearnedTemplatePath(cmdName))
+}
+
+// GenerateLearnedTemplateAt writes a caller-selected project policy without
+// changing XDG variables or overwriting a global learned profile.
+func GenerateLearnedTemplateAt(result *TraceResult, cmdName string, debug bool, templatePath string) (string, error) {
 	home, _ := os.UserHomeDir()
 
 	// Filter write paths: remove default writable and sensitive paths
@@ -178,7 +184,6 @@ func GenerateLearnedTemplate(result *TraceResult, cmdName string, debug bool) (s
 	template := buildTemplate(cmdName, allowRead, allowWrite)
 
 	// Save profile
-	templatePath := LearnedTemplatePath(cmdName)
 	if err := os.MkdirAll(filepath.Dir(templatePath), 0o750); err != nil {
 		return "", fmt.Errorf("failed to create profile directory: %w", err)
 	}

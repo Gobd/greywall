@@ -12,4 +12,5 @@ typedef struct {
 
 int gw_process_lookup(int32_t pid, gw_process_info *out);
 int32_t gw_audit_pid(const void *bytes, size_t length);
+int64_t gw_process_uid(int32_t pid);
 #endif

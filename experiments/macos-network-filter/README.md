@@ -7,6 +7,26 @@ Seatbelt filesystem sandbox. It uses `NEFilterDataProvider` socket-flow verdicts
 not a VM, `utun` routes, application proxy variables, TLS interception, or binary
 injection. It is not integrated with Greywall or lambdap.
 
+## Current build-2 checkpoint
+
+The resumed work restores a compiling Greywall CLI and adds project-local policy
+loading/candidate commit, a signed supervisor readiness channel, Copy Log/status
+UI, and filesystem-tracer health checks. See [CLI.md](CLI.md) and
+`build-combined.sh` for isolated builds. Full Go tests and race tests pass;
+formatter/linter are clean; 15 Swift + 4 Python tests pass; app compiles ARM-only.
+
+**These build-2 changes are not yet live verified.** Keep the old extension disabled
+until an operator-approved bounded test. A reported DNS/proxy incident remains
+unexplained. Readiness now uses authenticated snapshots rather than privileged logs.
+
+**Correction to the initial design:** Seatbelt rejects numeric-IP remote rules.
+There is no inherited exact-IP fallback here. Nonempty native enforcement requires
+explicit `--native-best-effort`; it cannot be claimed detached-child-safe or
+Linux-equivalent. Linux project network export/approval integration remains pending.
+
+The historical feasibility notes below are not claims that the latest build has
+passed runtime acceptance. In particular, planned features are not completed ones.
+
 ## Safety and scope
 
 All source and build artifacts belong in this directory. Build/tests perform no

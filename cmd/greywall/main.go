@@ -59,6 +59,11 @@ var (
 	allowReadPaths         []string
 	blankProfile           bool
 	watch                  bool
+	nativeNetwork          bool
+	nativeLearnNetwork     bool
+	nativeBestEffort       bool
+	nativeAppPath          string
+	nativeProjectRoot      string
 )
 
 func main() {
@@ -154,6 +159,11 @@ Configuration file format:
 	rootCmd.Flags().StringArrayVar(&allowReadPaths, "allow-read-path", nil, "Allow read-only access to a directory or file for this session (repeatable, e.g. --allow-read-path /data/refs)")
 	rootCmd.Flags().BoolVar(&blankProfile, "blank", false, "With --learning, skip default profile network rules (start from scratch)")
 	rootCmd.Flags().BoolVar(&watch, "watch", false, "Watch mode: skip profile loading, allow all network (logged on dashboard), permissive filesystem — observability only, no deny-by-default")
+	rootCmd.Flags().BoolVar(&nativeNetwork, "experimental-native-network", false, "Apple Silicon: use the signed native helper (experimental process attribution; not Linux-equivalent containment)")
+	rootCmd.Flags().BoolVar(&nativeBestEffort, "native-best-effort", false, "Explicitly acknowledge macOS helper ancestry gaps and direct egress needed for nonempty enforcement policy")
+	rootCmd.Flags().BoolVar(&nativeLearnNetwork, "native-learn-network", false, "With native backend, learn project destinations without relaxing filesystem restrictions")
+	rootCmd.Flags().StringVar(&nativeAppPath, "native-app", "/Applications/Greywall Network Experiment.app", "Signed native helper app location; never installed or activated automatically")
+	rootCmd.Flags().StringVar(&nativeProjectRoot, "native-project", "", "Project root containing .greywall policies (default: current directory)")
 
 	// Hidden aliases for backwards compatibility
 	rootCmd.Flags().StringVar(&profileName, "template", "", "Alias for --profile (deprecated)")
@@ -257,6 +267,15 @@ func runCommand(cmd *cobra.Command, args []string) error {
 
 	// Extract command name for profile lookup
 	cmdName := extractCommandName(args, cmdString)
+	if nativeNetwork {
+		if cfg == nil {
+			cfg = config.Default()
+		}
+		return runNativeCommand(cfg, command, cmdName, ports)
+	}
+	if nativeLearnNetwork || nativeBestEffort || nativeProjectRoot != "" {
+		return fmt.Errorf("native learning/project flags require --experimental-native-network")
+	}
 
 	// Load profiles. Watch mode never loads profiles — observability runs from a
 	// blank default config so no per-tool rules influence what's observed.
@@ -844,7 +863,7 @@ func runCommand(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "[greywall] Analyzing filesystem access patterns...\n")
 			profilePath, genErr := manager.GenerateLearnedTemplate(cmdName)
 			if genErr != nil {
-				fmt.Fprintf(os.Stderr, "[greywall] Warning: failed to generate profile: %v\n", genErr)
+				return fmt.Errorf("learning failed; previous profile retained: %w", genErr)
 			} else {
 				fmt.Fprintf(os.Stderr, "[greywall] Profile saved to: %s\n", profilePath)
 				fmt.Fprintf(os.Stderr, "[greywall] Next run will auto-load this profile.\n")

@@ -43,18 +43,20 @@ common = dict(SDKROOT="macosx", MACOSX_DEPLOYMENT_TARGET="15.0", SWIFT_VERSION="
 
 
 def target(name, directory, product_name, product_type, wrapper, package_product, entitlements, bundle_id):
-    source = add(name + "Source", "PBXFileReference", lastKnownFileType="sourcecode.swift",
-                 path=str(ROOT / "App" / directory / "main.swift"), sourceTree="<absolute>")
-    source_refs.append(source)
+    sources = []
+    for path in sorted((ROOT / "App" / directory).glob("*.swift")):
+        source = add(name + "Source" + path.name, "PBXFileReference", lastKnownFileType="sourcecode.swift",
+                     path=str(path), sourceTree="<absolute>")
+        source_refs.append(source)
+        sources.append(add(name + "SourceBuild" + path.name, "PBXBuildFile", fileRef=source))
     product = add(name + "Product", "PBXFileReference", explicitFileType=wrapper,
                   path=product_name, sourceTree="BUILT_PRODUCTS_DIR", includeInIndex=0)
     products.append(product)
-    source_build = add(name + "SourceBuild", "PBXBuildFile", fileRef=source)
     product_dependency = add(name + "PackageProduct", "XCSwiftPackageProductDependency",
                              package=package, productName=package_product)
     package_build = add(name + "PackageBuild", "PBXBuildFile", productRef=product_dependency)
     source_phase = add(name + "Sources", "PBXSourcesBuildPhase", buildActionMask=2147483647,
-                       files=[source_build], runOnlyForDeploymentPostprocessing=0)
+                       files=sources, runOnlyForDeploymentPostprocessing=0)
     framework_phase = add(name + "Frameworks", "PBXFrameworksBuildPhase", buildActionMask=2147483647,
                           files=[package_build], runOnlyForDeploymentPostprocessing=0)
     settings = dict(common, PRODUCT_NAME=product_name.rsplit(".", 1)[0],
@@ -73,7 +75,7 @@ extension, extension_product = target("FilterExtension", "Extension", BUNDLE_ID 
     "com.apple.product-type.system-extension", "wrapper.system-extension", "FilterPrototype",
     "Filter.entitlements", "$(GREYWALL_BUNDLE_ID).filter")
 host, host_product = target("GreywallNetworkExperiment", "Host", "Greywall Network Experiment.app",
-    "com.apple.product-type.application", "wrapper.application", "NetworkPolicy",
+    "com.apple.product-type.application", "wrapper.application", "NativeControl",
     "Host.entitlements", "$(GREYWALL_BUNDLE_ID)")
 proxy = add("ExtensionProxy", "PBXContainerItemProxy", containerPortal=identifier("Project"),
             proxyType=1, remoteGlobalIDString=extension, remoteInfo="FilterExtension")

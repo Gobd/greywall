@@ -1,12 +1,18 @@
 import AppKit
 import NetworkExtension
 import NetworkPolicy
+import NativeControl
 import SystemExtensions
 
 // No activation or network-settings writes occur on launch. Each is a button action.
 final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionRequestDelegate {
     private var window: NSWindow!
     private let output = NSTextView()
+    private let status = NSTextField(wrappingLabelWithString: "Inactive — no filtering enabled by this app")
+    private var snapshotTimer: Timer?
+    private var lastSnapshot: FilterSnapshot?
+    private var lease: NativeSessionLease?
+    private var snapshotInFlight = false
     private let experimentPath = NSTextField(string: CommandLine.arguments.dropFirst().first ?? FileManager.default.currentDirectoryPath)
     private var request: OSSystemExtensionRequest?
     private var fixture: Process?
@@ -40,7 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
         let buttons = NSStackView(views: [
             button("1. Activate extension", #selector(activate)),
             button("2. Enable learning", #selector(learn)),
-            button("2. Enable drop-all", #selector(enforce)),
+            button("2. Enforce saved policy", #selector(enforceSaved)),
+            button("Test drop-all", #selector(enforce)),
         ])
         buttons.orientation = .horizontal
         let controls = NSStackView(views: [
@@ -49,6 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
             button("Deactivate extension", #selector(deactivate)),
         ])
         controls.orientation = .horizontal
+        let logControls = NSStackView(views: [button("Copy Log", #selector(copyLog)), button("Save Learned Policy", #selector(saveLearnedPolicy))])
+        logControls.orientation = .horizontal
         let folder = NSStackView(views: [NSTextField(labelWithString: "Experiment source folder:"), experimentPath,
                                          button("Choose…", #selector(chooseFolder))])
         folder.orientation = .horizontal
@@ -65,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
         scroll.backgroundColor = .textBackgroundColor
         scroll.hasVerticalScroller = true
         scroll.documentView = output
-        let stack = NSStackView(views: [title, buttons, folder, controls, scroll])
+        let stack = NSStackView(views: [title, status, buttons, folder, controls, logControls, scroll])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
@@ -97,6 +106,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
             self.output.scrollToEndOfDocument(nil)
         }
     }
+    @objc private func copyLog() {
+        let clipboard = NSPasteboard.general
+        clipboard.clearContents()
+        if !clipboard.setString(output.string, forType: .string) {
+            append("Could not copy log to the clipboard.")
+        }
+    }
     @objc private func chooseFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -111,20 +127,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
         append("Requesting activation; macOS may require approval. No filter policy enabled yet.")
         OSSystemExtensionManager.shared.submitRequest(operation)
     }
+    private var policyURL: URL {
+        let entered = experimentPath.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return URL(fileURLWithPath: (entered as NSString).expandingTildeInPath).standardizedFileURL
+            .appendingPathComponent(".greywall/network.json")
+    }
+    @objc private func saveLearnedPolicy() {
+        guard let snapshot = lastSnapshot, snapshot.ready, snapshot.configuration.mode == .learn else {
+            append("No verified learning snapshot to save."); return
+        }
+        do {
+            try ProjectPolicyStore.save(snapshot.observed, to: policyURL)
+            append("Saved \(snapshot.observed.count) exact destinations to \(policyURL.path). Review before enforcement.")
+        } catch { append("Policy save failed: \(error)") }
+    }
+    @objc private func enforceSaved() {
+        do { configure(.enforce, allowed: try ProjectPolicyStore.load(from: policyURL)) }
+        catch { append("Policy load failed: \(error)") }
+    }
     @objc private func learn() { configure(.learn) }
     @objc private func enforce() { configure(.enforce) }
-    private func configure(_ mode: SessionConfiguration.Mode) {
+    private func configure(_ mode: SessionConfiguration.Mode, allowed: Set<Destination> = []) {
         guard extensionReady else { append("Activate the extension first."); return }
         guard !filterEnabledByThisApp else { append("Disable the filter before enabling another mode."); return }
         guard fixture == nil else { append("Wait for the fixture to finish before changing policy."); return }
         guard let root = ProcessIdentity.lookup(getpid()) else { append("Cannot read root identity."); return }
         do {
-            let data = try JSONEncoder().encode(SessionConfiguration(root: root, mode: mode))
+            _ = try FilterClient.serviceName() // reject an old app/helper build before changing settings
+            lease = try NativeSessionLease()
+            let data = try JSONEncoder().encode(SessionConfiguration(root: root, mode: mode, allowed: allowed))
+            status.stringValue = "Starting — loading filter configuration…"
             let manager = NEFilterManager.shared()
             manager.loadFromPreferences { error in
-                if let error { self.append("Load failed: \(error)"); return }
+                if let error { self.lease = nil; self.append("Load failed: \(error)"); return }
+                if manager.isEnabled {
+                    self.lease = nil
+                    self.append("A filter is already enabled; disable the existing session first.")
+                    return
+                }
                 if let existing = manager.providerConfiguration?.filterDataProviderBundleIdentifier,
                    existing != self.extensionID {
+                    self.lease = nil
                     self.append("Refusing to change a different provider: \(existing)"); return
                 }
                 let configuration = NEFilterProviderConfiguration()
@@ -136,12 +179,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
                 manager.localizedDescription = "Greywall Native Network Experiment"
                 manager.isEnabled = true
                 manager.saveToPreferences { error in
-                    if let error { self.append("Enable failed: \(error)"); return }
-                    self.filterEnabledByThisApp = true
-                    self.append("Saved \(mode.rawValue) settings for this app's descendants. This is NOT a provider readiness handshake. Confirm provider-start/flow logs before interpreting results. Drop-all has NO allowed destinations.")
+                    if let error { self.lease = nil; self.append("Enable failed: \(error)"); return }
+                    DispatchQueue.main.async {
+                        self.filterEnabledByThisApp = true
+                        self.status.stringValue = "Starting — settings saved, waiting for provider readiness…"
+                        self.append("Settings saved. Waiting for a generation-matched provider snapshot; not ready yet.")
+                        self.startSnapshots(mode: mode)
+                    }
                 }
             }
-        } catch { append("Configuration failed: \(error)") }
+        } catch { lease = nil; append("Configuration failed: \(error)") }
+    }
+    private func startSnapshots(mode: SessionConfiguration.Mode) {
+        snapshotTimer?.invalidate()
+        lastSnapshot = nil
+        guard let root = ProcessIdentity.lookup(getpid()) else { disableFilter { _ in }; return }
+        var monitor = ReadinessMonitor(root: root, mode: mode)
+        func failed(_ message: String) {
+            self.snapshotTimer?.invalidate()
+            self.lastSnapshot = nil
+            self.status.stringValue = "Failed — provider readiness lost/not established"
+            self.append(message + ". Disabling only this session's filter.")
+            self.disableFilter { _ in }
+        }
+        func refresh() {
+            guard !self.snapshotInFlight else { return }
+            self.snapshotInFlight = true
+            do {
+                FilterClient(serviceName: try FilterClient.serviceName()).snapshot { result in
+                    self.snapshotInFlight = false
+                    guard self.filterEnabledByThisApp else { return }
+                    let snapshot: FilterSnapshot?
+                    if case let .success(value) = result { snapshot = value } else { snapshot = nil }
+                    switch monitor.observe(snapshot) {
+                    case .ready:
+                        guard let snapshot else { return }
+                        let first = self.lastSnapshot == nil
+                        self.lastSnapshot = snapshot
+                        self.status.stringValue = "\(mode == .learn ? "Learning" : "Enforcing") — ready | allowed \(snapshot.allowedFlows) | dropped \(snapshot.droppedFlows) | learned \(snapshot.observed.count)"
+                        if first { self.append("Provider READY for this process generation. Counters do not depend on OS log permissions.") }
+                    case .starting:
+                        self.lastSnapshot = nil
+                        self.status.stringValue = "Starting/reconnecting — no verified readiness; fixture disabled"
+                    case .failed:
+                        failed("Readiness timeout or stale/wrong-mode provider snapshot")
+                    }
+                }
+            } catch {
+                self.snapshotInFlight = false
+                failed("Snapshot setup failed: \(error)")
+            }
+        }
+        snapshotTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in refresh() }
+        refresh()
     }
     @objc private func disable() { disableFilter { _ in } }
     private func disableFilter(completion: @escaping (Bool) -> Void) {
@@ -149,14 +239,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
         manager.loadFromPreferences { error in
             if let error { self.append("Load failed: \(error)"); completion(false); return }
             guard manager.providerConfiguration?.filterDataProviderBundleIdentifier == self.extensionID else {
+                self.lease = nil
                 self.append("No matching experiment configuration to disable."); completion(true); return
+            }
+            if manager.isEnabled {
+                guard let data = manager.providerConfiguration?.vendorConfiguration?["sessionJSON"] as? Data,
+                      let configuration = try? JSONDecoder().decode(SessionConfiguration.self, from: data),
+                      let current = ProcessIdentity.lookup(getpid()), current.sameProcess(as: configuration.root) else {
+                    self.append("Refusing to disable a different session's filter. Use its owning launcher or System Settings.")
+                    completion(false); return
+                }
             }
             manager.isEnabled = false
             manager.saveToPreferences { error in
                 if let error { self.append("Disable failed: \(error)"); completion(false); return }
-                self.filterEnabledByThisApp = false
-                self.append("Disabled ONLY this experiment's filter.")
-                completion(true)
+                DispatchQueue.main.async {
+                    self.filterEnabledByThisApp = false
+                    self.snapshotTimer?.invalidate()
+                    self.snapshotTimer = nil
+                    self.lastSnapshot = nil
+                    self.lease = nil
+                    self.status.stringValue = "Inactive — filter configuration disabled"
+                    self.append("Disabled ONLY this experiment's filter configuration.")
+                    completion(true)
+                }
             }
         }
     }
@@ -173,6 +279,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
     }
     @objc private func runFixture() {
         guard fixture == nil else { append("Fixture already running."); return }
+        guard !filterEnabledByThisApp || lastSnapshot?.ready == true else {
+            append("Provider is not ready; no fixture launched."); return
+        }
         let entered = experimentPath.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let folder = (entered as NSString).expandingTildeInPath
         let path = URL(fileURLWithPath: folder).standardizedFileURL.appendingPathComponent("fixtures/baseline.py")
@@ -219,10 +328,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, OSSystemExtensionReque
     }
     func request(_ request: OSSystemExtensionRequest, actionForReplacingExtension existing: OSSystemExtensionProperties,
                  withExtension replacement: OSSystemExtensionProperties) -> OSSystemExtensionRequest.ReplacementAction {
-        // Do not replace an existing version automatically.
-        append("Existing extension found. Deactivate the old experiment before replacing it.")
-        return .cancel
+        let alert = NSAlert()
+        alert.messageText = "Replace the previous Greywall experiment?"
+        alert.informativeText = "This updates only the Greywall helper from build \(existing.bundleVersion) to \(replacement.bundleVersion). Keep filtering disabled during the update."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Replace")
+        return alert.runModal() == .alertSecondButtonReturn ? .replace : .cancel
     }
+}
+
+if CommandLine.arguments.count > 1 && CommandLine.arguments[1] == "--native-launch" {
+    let launcher = NativeLaunch()
+    launcher.start(arguments: Array(CommandLine.arguments.dropFirst(2)))
+    withExtendedLifetime(launcher) { RunLoop.main.run() }
+    exit(70)
 }
 
 let application = NSApplication.shared

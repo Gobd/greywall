@@ -30,6 +30,8 @@ func generateSessionSuffix() string {
 type MacOSSandboxParams struct {
 	Command                 string
 	NeedsNetworkRestriction bool
+	NativePolicy            *NativeNetworkPolicy
+	NativeLearning          bool
 	ProxyURL                string // External proxy URL (for env vars)
 	ProxyHost               string // Proxy host (for sandbox profile network rules)
 	ProxyPort               string // Proxy port (for sandbox profile network rules)
@@ -633,11 +635,17 @@ func GenerateSandboxProfile(params MacOSSandboxParams) string {
 		profile.WriteString(`(allow network-bind (local ip "localhost:*"))
 (allow network-inbound (local ip "localhost:*"))
 `)
-		// Process can make outbound connections to localhost
-		if params.AllowLocalOutbound {
+		// Seatbelt's network syntax supports localhost/*, not arbitrary IPs.
+		// Never fabricate invalid exact-IP rules or silently widen them. Empty
+		// enforcement stays deny-all. Learning/best-effort are explicit opt-ins.
+		if params.NativePolicy != nil && (params.NativeLearning || params.NativePolicy.BestEffort) {
+			profile.WriteString("; Explicit native learning/best-effort egress\n(allow network-outbound)\n")
+		}
+		// Legacy localhost grants must not bypass a native exact allowlist.
+		if params.NativePolicy == nil && params.AllowLocalOutbound {
 			profile.WriteString(`(allow network-outbound (local ip "localhost:*"))
 `)
-		} else {
+		} else if params.NativePolicy == nil {
 			// Forwarded ports (-f/--forward): allow outbound to specific host
 			// localhost ports. On macOS the network is shared with the host (no
 			// namespace), so forwarding is just a targeted allow rule rather than
@@ -703,6 +711,14 @@ func GenerateSandboxProfile(params MacOSSandboxParams) string {
 // WrapCommandMacOS wraps a command with macOS sandbox restrictions.
 // tmpDir is the per-session temp directory to set as TMPDIR; if empty, TMPDIR is not overridden.
 func WrapCommandMacOS(cfg *config.Config, command string, exposedPorts []int, rewrittenEnvFiles map[string]string, tmpDir string, debug bool) (string, error) {
+	return wrapCommandMacOS(cfg, command, exposedPorts, rewrittenEnvFiles, tmpDir, debug, nil, false)
+}
+
+func WrapCommandMacOSNative(cfg *config.Config, command string, exposedPorts []int, tmpDir string, debug bool, policy *NativeNetworkPolicy, learn bool) (string, error) {
+	return wrapCommandMacOS(cfg, command, exposedPorts, nil, tmpDir, debug, policy, learn)
+}
+
+func wrapCommandMacOS(cfg *config.Config, command string, exposedPorts []int, rewrittenEnvFiles map[string]string, tmpDir string, debug bool, nativePolicy *NativeNetworkPolicy, nativeLearning bool) (string, error) {
 	cwd, _ := os.Getwd()
 
 	// Build allow paths: default + configured + per-session tmpdir
@@ -755,6 +771,8 @@ func WrapCommandMacOS(cfg *config.Config, command string, exposedPorts []int, re
 	params := MacOSSandboxParams{
 		Command:                 command,
 		NeedsNetworkRestriction: needsNetworkRestriction,
+		NativePolicy:            nativePolicy,
+		NativeLearning:          nativeLearning,
 		ProxyURL:                cfg.Network.ProxyURL,
 		ProxyHost:               proxyHost,
 		ProxyPort:               proxyPort,

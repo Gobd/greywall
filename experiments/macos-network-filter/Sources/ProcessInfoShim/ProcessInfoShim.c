@@ -16,6 +16,12 @@ int gw_process_lookup(int32_t pid, gw_process_info *out) {
     return 1;
 }
 
+int64_t gw_process_uid(int32_t pid) {
+    struct proc_bsdinfo info = {0};
+    if (pid <= 0 || proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != sizeof(info)) return -1;
+    return info.pbi_uid;
+}
+
 int32_t gw_audit_pid(const void *bytes, size_t length) {
     if (!bytes || length != sizeof(audit_token_t)) return -1;
     audit_token_t token;

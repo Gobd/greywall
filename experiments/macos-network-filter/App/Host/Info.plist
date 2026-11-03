@@ -6,7 +6,7 @@
     <key>CFBundleName</key><string>Greywall Network Experiment</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleVersion</key><string>2</string>
     <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSystemExtensionUsageDescription</key><string>Test native socket filtering for this experiment and its child processes, without proxy variables.</string>
