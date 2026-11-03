@@ -15,11 +15,9 @@ func (m *Manager) generateLearnedTemplatePlatform(cmdName string) (string, error
 		return "", fmt.Errorf("no eslogger log available (was learning mode enabled?)")
 	}
 
-	// Stop eslogger before parsing
-	if m.esloggerCmd != nil && m.esloggerCmd.Process != nil {
-		_ = m.esloggerCmd.Process.Signal(os.Interrupt)
-		_ = m.esloggerCmd.Wait()
-		m.esloggerCmd = nil
+	// A dead tracer is not a successful learning session. Keep the previous profile.
+	if err := m.stopEslogger(); err != nil {
+		return "", err
 	}
 
 	// Parse eslogger log with root PID for process tree tracking
@@ -28,7 +26,7 @@ func (m *Manager) generateLearnedTemplatePlatform(cmdName string) (string, error
 		return "", fmt.Errorf("failed to parse eslogger log: %w", err)
 	}
 
-	templatePath, err := GenerateLearnedTemplate(result, cmdName, m.debug)
+	templatePath, err := m.saveLearnedTrace(result, cmdName)
 	if err != nil {
 		return "", err
 	}

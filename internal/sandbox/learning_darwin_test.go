@@ -386,16 +386,8 @@ func TestParseEsloggerLogEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := ParseEsloggerLog(logFile, 100, false)
-	if err != nil {
-		t.Fatalf("ParseEsloggerLog() error: %v", err)
-	}
-
-	if len(result.WritePaths) != 0 {
-		t.Errorf("expected 0 write paths, got %d", len(result.WritePaths))
-	}
-	if len(result.ReadPaths) != 0 {
-		t.Errorf("expected 0 read paths, got %d", len(result.ReadPaths))
+	if _, err := ParseEsloggerLog(logFile, 100, false); err == nil || !strings.Contains(err.Error(), "no filesystem events matched") {
+		t.Fatalf("expected unusable trace to be rejected, got %v", err)
 	}
 }
 

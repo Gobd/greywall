@@ -18,7 +18,7 @@ func (m *Manager) generateLearnedTemplatePlatform(cmdName string) (string, error
 		return "", fmt.Errorf("failed to parse strace log: %w", err)
 	}
 
-	templatePath, err := GenerateLearnedTemplate(result, cmdName, m.debug)
+	templatePath, err := m.saveLearnedTrace(result, cmdName)
 	if err != nil {
 		return "", err
 	}
