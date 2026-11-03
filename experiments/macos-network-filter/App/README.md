@@ -26,7 +26,7 @@ that this team can provision Network Extensions/System Extensions.
 ```sh
 DEVELOPMENT_TEAM=YOUR_PAID_TEAM_ID \
 BUNDLE_ID=your.reverse.dns.GreywallNetworkExperiment \
-bash build-app.sh --provision
+bash build-app.sh --provision --register-device
 ```
 
 `BUNDLE_ID` must be an identifier you own. The app uses that ID; the extension
@@ -37,8 +37,26 @@ Xcode's paid team, not the parenthesized ID in a certificate's display name.
 `--provision` explicitly permits Xcode to register the two test app identifiers
 and create/download the required development provisioning profiles through the
 account already signed into Xcode. Omit it if provisioning is already available.
+`--register-device` additionally allows Xcode to register this Mac in that developer
+account so the development profile can include it; it requires `--provision`.
+It does not install software or change local network settings. Device registration
+uses the team's development-device allocation, so it remains an explicit option.
 No certificate/private-key export, login credentials or system trust changes.
 If the capability is denied, stop and resolve the paid team/capability setup.
+For this **Apple Development** local build, `GREYWALL_NE_ENTITLEMENT` defaults to
+`content-filter-provider`, matching the development profiles. Apple's suffixed
+`content-filter-provider-systemextension` value is for **Developer ID** signing;
+a future distribution build must use that value with the matching certificate
+and profiles. This is a signing-format distinction, not broader filtering access.
+Reference: https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.networking.networkextension
+
+If codesign displays a Keychain dialog, approve use of ONLY the Apple Development
+signing key by `/usr/bin/codesign`, entering the local Keychain/login password in
+that dialog. Never send the password to the agent. Do not export the private key,
+allow all applications to access it or change certificate trust to Always Trust.
+A canceled prompt can surface as `errSecInternalComponent`; securityd logs should
+be checked before assuming this generic error proves a key-access problem.
+
 Do not relax SIP, enable system-extension developer mode, or bypass validation.
 
 Output:

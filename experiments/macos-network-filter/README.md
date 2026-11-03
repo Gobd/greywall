@@ -73,20 +73,28 @@ The fixtures establish a baseline; they have not been run against an active filt
 - Containing app + embedded system extension compile successfully without signing.
 - Valid Apple Development signing identity is now available after the operator
   installed Apple's WWDR G3 intermediate certificate.
-- Signed provisioning attempt was blocked: Xcode identifies the selected team as
-  a free **Personal Development Team**, which cannot provision Network Extensions
-  or System Extensions. An activated paid Developer Program team is required.
+- The selected paid team is now accepted, the operator's Mac is registered, and
+  development profiles for app/extension were generated through explicit flags.
+- Development signing uses `content-filter-provider`. Apple's suffixed value is
+  for Developer ID signing, as documented in its entitlement reference.
+- Actual signing currently stopped at `errSecInternalComponent`; securityd logs
+  show the `/usr/bin/codesign` signing-key access prompt was canceled/not approved.
 - Read-only filter-preferences probe timed out after 10 seconds. No settings saved.
-- No app installed, extension activated or traffic intercepted yet.
+- Our app/extension have not been installed or activated. No interception claim
+  for OUR provider yet.
+- A separate operator-installed **LuLu 4.5.7** test confirmed ordinary descendants
+  are blocked by a lifetime parent-tree rule while an unrelated process is allowed.
+  A reparented descendant received an HTTP response despite the selected root
+  remaining alive. See [fixtures/LULU.md](fixtures/LULU.md) for procedure/results.
 
 These results do NOT establish that `libproc` is accessible inside the real
 provider sandbox or that socket attribution works for these applications there.
 
 ## Gaps before this can be a safety boundary
 
-1. **Signing and activation:** the app/extension compile, but still need an
-   activated paid signing team, supported Network Extension entitlements/provisioning
-   and user approval. Do not bypass signing/SIP or modify system files. Another
+1. **Signing and activation:** the app/extension compile and paid development
+   provisioning is available. Actual signing-key access and subsequent OS activation
+   still need operator approval. Do not bypass signing/SIP or modify system files. Another
    installed network component (Tailscale here) must be tested for coexistence,
    not disabled to make this pass.
 2. **Trusted process lifecycle attribution:** the current ancestry walk is only

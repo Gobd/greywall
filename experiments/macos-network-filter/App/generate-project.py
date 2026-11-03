@@ -37,7 +37,7 @@ common = dict(SDKROOT="macosx", MACOSX_DEPLOYMENT_TARGET="15.0", SWIFT_VERSION="
               CODE_SIGN_STYLE="Automatic", CODE_SIGN_IDENTITY="Apple Development",
               DEVELOPMENT_TEAM="", ENABLE_HARDENED_RUNTIME="YES", GENERATE_INFOPLIST_FILE="NO",
               GREYWALL_BUNDLE_ID="dev.greywall.NetworkExperiment", ENABLE_USER_SCRIPT_SANDBOXING="YES",
-              ALWAYS_SEARCH_USER_PATHS="NO")
+              ALWAYS_SEARCH_USER_PATHS="NO", GREYWALL_NE_ENTITLEMENT="content-filter-provider")
 
 
 def target(name, directory, product_name, product_type, wrapper, package_product, entitlements, bundle_id):

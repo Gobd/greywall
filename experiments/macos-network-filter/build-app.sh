@@ -8,14 +8,17 @@ if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
 fi
 mode=signed
 provision=false
+register_device=false
 for argument in "$@"; do
     case "$argument" in
         --unsigned) mode=unsigned ;;
         --provision) provision=true ;;
+        --register-device) register_device=true ;;
         --help|-h)
             echo "Compile only: bash build-app.sh --unsigned"
             echo "Signed: DEVELOPMENT_TEAM=YOUR_TEAM BUNDLE_ID=YOUR_UNIQUE_ID bash build-app.sh"
             echo "Add --provision to explicitly allow Xcode to register app IDs/download provisioning profiles."
+            echo "Add --register-device with --provision to register this Mac in the developer account."
             echo "Build does not install or activate the app/extension."
             exit 0 ;;
         *) echo "Unknown option: $argument" >&2; exit 1 ;;
@@ -23,6 +26,9 @@ for argument in "$@"; do
 done
 if [ "$mode" = unsigned ] && [ "$provision" = true ]; then
     echo "--provision cannot be combined with --unsigned" >&2; exit 1
+fi
+if [ "$register_device" = true ] && { [ "$mode" = unsigned ] || [ "$provision" != true ]; }; then
+    echo "--register-device requires a signed build with --provision" >&2; exit 1
 fi
 if [ "$mode" = signed ]; then
     : "${DEVELOPMENT_TEAM:?Set DEVELOPMENT_TEAM to your Apple Developer team ID}"
@@ -33,6 +39,10 @@ export TMPDIR="$PWD/.build/tmp"
 export CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/module-cache"
 python3 App/generate-project.py
+app="$PWD/.build/app/Build/Products/Debug/Greywall Network Experiment.app"
+# Only our generated output: avoid retaining a different bundle-ID extension
+# when switching between unsigned and personalized signed builds.
+if [ -d "$app" ]; then rm -rf -- "$app"; fi
 options=(-project "$PWD/.build/xcode/GreywallNetworkExperiment.xcodeproj"
     -scheme GreywallNetworkExperiment -configuration Debug
     -destination "platform=macOS,arch=arm64" ARCHS=arm64 ONLY_ACTIVE_ARCH=YES
@@ -43,9 +53,9 @@ if [ "$mode" = unsigned ]; then
 else
     options+=("DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM" "GREYWALL_BUNDLE_ID=$BUNDLE_ID")
     if [ "$provision" = true ]; then options+=(-allowProvisioningUpdates); fi
+    if [ "$register_device" = true ]; then options+=(-allowProvisioningDeviceRegistration); fi
 fi
 xcodebuild "${options[@]}" build
-app="$PWD/.build/app/Build/Products/Debug/Greywall Network Experiment.app"
 if [ "$(lipo -archs "$app/Contents/MacOS/Greywall Network Experiment")" != arm64 ]; then
     echo "Unexpected app architecture; refusing to report a successful ARM-only build." >&2; exit 1
 fi
